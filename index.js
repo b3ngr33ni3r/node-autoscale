@@ -268,6 +268,7 @@ if (typeof config.method == "string" && config.method === "round robin") {
   return console.log("unsupported method! try 'round robin','uptime' or 'memory'.");
 }
 
+//bring up our proxy server
 var proxy = new Proxy.createProxyServer();
 var proxyServer = Http.createServer(serverLogic);
 proxyServer.on('upgrade', wsLogic);
