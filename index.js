@@ -1,25 +1,28 @@
-var Promise = require("promise"),
-  Net = require("net"),
+var split = require("split"),
+  Proxy = require("http-proxy"),
   ChildProcess = require("child_process")
-  Async = require("async"),
   Uniformer = require("uniformer"),
-  config = Uniformer({
+  Http = require("http"),
+  config = Uniformer({ //conar will make this less buggy
     defaults: {
       name: "autoscale",
       port: 2000,
       max: 10,
       min: 1,
-      retry: 3,
-      entry: "npm start",
+      //retry: 3, //TODO, otherwise it can retry forever
+      method: "round robin",
+      entry: "./test",
       verbose: true
     }
   });
 
+//
 //patch console.log to use verbose, and/or loggers
+//
 (function(){
   var logger = console;
 
-  _log = logger.log;
+  _log = logger.log || logger.info;
   logger.log = function() {
     if (config.verbose) {
       _log.apply(null,arguments);
@@ -46,83 +49,226 @@ var Promise = require("promise"),
 
 })();
 
-//the class for our monitored processes
-var Process = (function() {
-  function Process(command,port,args,maxRespawnCount) {
-    this.port = port;
-    this.command = command;
-    this.args = args;
-    this.pid = null;
-    this._process = null;
-    var _maxRespawnCount = maxRespawnCount || 0,
-      self = this;
-
-    this.start = function() {
-      if (self._process == null || !self._process.connected) {
-        var _respawnCount = self._process._respawnCount || -1;
-        if (_respawnCount < _maxRespawnCount) {
-          self._process = ChildProcess.fork(self.command,self.args);
-          self._process._respawnCount = _respawnCount+1;
-          self._process.stdout.on('data',console.log);
-          self._process.stderr.on('data',console.error);
-          self._process.on('close',self.close);
-          self._process.on('exit',self.close);
-          self._process.on('disconnect',self.close);
-          self._process.on('error',self.error);
-          self.pid = self._process.pid;
+//
+//port manager, pass a port to free it, otherwise it returns a free port
+//
+var freePort = (function(max,min,start) {
+  var _pool = [];
+  for (var i = min ; i <= max ; i++) {
+    _pool.push({port:start+i,used:false});
+  }
+  return function(port) {
+    if (port == null) {
+      for (var i = 0 ; i < _pool.length ;  i++) {
+        if (!_pool[i].used) {
+          _pool[i].used = true;
+          return _pool[i].port;
         }
       }
-    };
-    this.close = function(err) {
-      var status = "instantiating new instance...";
-      if (self._process._respawnCount >= _maxRespawnCount) {
-        status = "and will stay down, hit retry limit "+_maxRespawnCount;
+    } else {
+      for (var i = 0 ; i < _pool.length ;  i++) {
+        if (_pool[i].port == port && _pool[i].used) {
+          return _pool[i].used = false;
+        }
       }
-      console.log("[DOWN] "+self.pid+" crashed, "+status);
-      if (self._process.connected) {
-        self._process.connected = false;
-      }
-      self.start();
-    };
-    this.error = function(err) {
-      console.error(err);
-    };
-    this.kill = function(signal) {
-      self._process.kill(signal);
-    };
+    }
+  };
+})(config.max,config.min,config.port);
 
-  }
-  return Process;
-})();
+//
+//available address store
+//
+var addresses = [];
 
-//track our processes here
-var processes = [];
-function spawnNewProcess() {
-  if (processes.length < config.max) {
-    var proc = new Process(config.entry,config.port+i,["--verbose",config.verbose,"--port",config.port+i],config.retry);
-    proc._process.on("message", function(m) {
-      if (m.full != null && m.full === true) {
-        spawnNewProcess();
-      }
-    });
-    proc.start();
-    processes.push(proc);
+//
+//process spawner
+//
+var spawnNewProcess = (function(entry,max,verbose) {
+  var procCount = 0;
+  function _spawn() {
+    if (procCount < max) {
+      var port = freePort();
+      var proc = ChildProcess.fork(entry,["--verbose",verbose,"--port",port],{silent:true});
+      procCount++;
+      addresses.push({
+        host: "localhost",
+        port: port,
+        filter: {
+          memory: null,
+          uptime: null
+        }
+      });
+      proc.on("message", function (data) {
+        if (data.full === true) {
+          for (var i = 0 ; i < addresses.length ; i++) {
+            if (addresses[i].port == port) {
+              addresses.splice(i,1);
+            }
+          }
+          _spawn();
+        } else {
+          addresses.push({
+            host: "localhost",
+            port: port,
+            filter: {
+              memory: data.memory || null,
+              uptime: data.uptime || null
+            }
+          });
+        }
+
+      });
+      proc.on("error", function (err) {
+        console.error(err);
+      });
+      proc.on("exit", function () {
+        for (var i = 0 ; i < addresses.length ; i++) {
+          if (addresses[i].port == port) {
+            addresses.splice(i,1);
+          }
+        }
+        _spawn(); //try again
+      });
+      proc.stdout.pipe(split()).on("data", function (data) {
+        console.log(data);
+      });
+      proc.stderr.pipe(split()).on("data", function (data) {
+        console.error(data);
+      });
+    }
   }
-}
+  return _spawn;
+})(config.entry,config.max,config.verbose);
+
+//
 //spawn our min number of processes
+//
 for (var i = 0 ; i < config.min; i++) {
   spawnNewProcess();
 }
 
-//build our tcp server
-var server = Net.createServer(function (conn) {
-  console.log(conn);
-  conn.on("error", function (err) {
-    console.error(err);
-  });
-});
+//
+//build our tcp server by config.method
+//
 
-//listen on port
-server.listen(config.port, function () {
-  console.log(config.name+" is up on "+config.port);  
-});
+var serverLogic,wsLogic; //our functions for server creation
+
+if (typeof config.method == "string" && config.method === "round robin") {
+  serverLogic = function (req, res) {
+    var target = addresses.shift();
+    if (target != null) {
+      proxy.web(req, res, {target: target});
+      addresses.push(target);
+    } else {
+      res.writeHead(500, {"Content-Type": "application/json"});
+      res.end(JSON.stringify({error:"No Available Servers!"}));
+    }
+  };
+
+  wsLogic = function (req, socket, head) {
+    var target = addresses.shift();
+    if (target != null) {
+      proxy.ws(req, socket, head, {target: target});
+      addresses.push(target);
+    } else {
+      socket.end(JSON.stringify({error:"No Available Servers!"}));
+    }
+  };
+} else if (typeof config.method == "string" && config.method === "memory") {
+  serverLogic = function (req, res) {
+    var lowAddr = null;
+    for (var i = 0 ; i < addresses.length ; i++) {
+      var addr = addresses[i];
+      if (lowAddr == null) {
+        lowAddr = addr;
+      } else {
+        //do a uptime diff, saving lowest
+        if (addr.filter.memory != null) {
+          if (addr.memory <= lowAddr.memory) {
+            lowAddr = addr;
+          }
+        }
+      }
+    }
+    if (lowAddr != null) {
+      proxy.web(req, res, {target: lowAddr});
+    } else {
+      res.writeHead(500, {"Content-Type": "application/json"});
+      res.end(JSON.stringify({error:"No Available Servers!"}));
+    }
+  };
+
+  wsLogic = function (req, socket, head) {
+    var lowAddr = null;
+    for (var i = 0 ; i < addresses.length ; i++) {
+      var addr = addresses[i];
+      if (lowAddr == null) {
+        lowAddr = addr;
+      } else {
+        //do a uptime diff, saving lowest
+        if (addr.filter.memory != null) {
+          if (addr.memory <= lowAddr.memory) {
+            lowAddr = addr;
+          }
+        }
+      }
+    }
+    if (lowAddr != null) {
+      proxy.ws(req, socket, head, {target: lowAddr});
+    } else {
+      socket.end(JSON.stringify({error:"No Available Servers!"}));
+    }
+  };
+} else if (typeof config.method == "string" && config.method === "uptime") {
+  serverLogic = function (req, res) {
+    var lowAddr = null;
+    for (var i = 0 ; i < addresses.length ; i++) {
+      var addr = addresses[i];
+      if (lowAddr == null) {
+        lowAddr = addr;
+      } else {
+        //do a uptime diff, saving lowest
+        if (addr.filter.uptime != null) {
+          if (addr.uptime <= lowAddr.uptime) {
+            lowAddr = addr;
+          }
+        }
+      }
+    }
+    if (lowAddr != null) {
+      proxy.web(req, res, {target: lowAddr});
+    } else {
+      res.writeHead(500, {"Content-Type": "application/json"});
+      res.end(JSON.stringify({error:"No Available Servers!"}));
+    }
+  };
+
+  wsLogic = function (req, socket, head) {
+    var lowAddr = null;
+    for (var i = 0 ; i < addresses.length ; i++) {
+      var addr = addresses[i];
+      if (lowAddr == null) {
+        lowAddr = addr;
+      } else {
+        //do a uptime diff, saving lowest
+        if (addr.filter.uptime != null) {
+          if (addr.uptime <= lowAddr.uptime) {
+            lowAddr = addr;
+          }
+        }
+      }
+    }
+    if (lowAddr != null) {
+      proxy.ws(req, socket, head, {target: lowAddr});
+    } else {
+      socket.end(JSON.stringify({error:"No Available Servers!"}));
+    }
+  };
+} else {
+  return console.log("unsupported method! try 'round robin','uptime' or 'memory'.");
+}
+
+var proxy = new Proxy.createProxyServer();
+var proxyServer = Http.createServer(serverLogic);
+proxyServer.on('upgrade', wsLogic);
+proxyServer.listen(config.port);
