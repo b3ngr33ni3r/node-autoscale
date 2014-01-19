@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 var split = require("split"),
   Proxy = require("http-proxy"),
   ChildProcess = require("child_process")
