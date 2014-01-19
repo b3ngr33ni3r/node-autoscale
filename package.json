@@ -1,15 +1,14 @@
 {
   "name": "node-autoscale",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "autoscale across processes",
   "main": "index.js",
   "dependencies": {
-    "promise": "~3.2.0",
-    "uniformer": "0.0.4",
-    "async": "~0.2.9",
     "split": "~0.2.10",
-    "http-proxy": "~1.0.1"
+    "http-proxy": "~1.0.1",
+    "optimist": "~0.6.0"
   },
+  "bin": "index.js",
   "devDependencies": {},
   "scripts": {
     "start": "node index.js",

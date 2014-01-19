@@ -1,10 +1,8 @@
 var split = require("split"),
   Proxy = require("http-proxy"),
   ChildProcess = require("child_process")
-  Uniformer = require("uniformer"),
   Http = require("http"),
-  config = Uniformer({ //conar will make this less buggy
-    defaults: {
+  config = require("optimist").default({
       name: "autoscale",
       port: 2000,
       max: 10,
@@ -13,8 +11,7 @@ var split = require("split"),
       method: "round robin",
       entry: "./test",
       verbose: true
-    }
-  });
+  }).argv;
 
 //
 //patch console.log to use verbose, and/or loggers

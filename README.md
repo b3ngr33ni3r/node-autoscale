@@ -1,4 +1,4 @@
-node-autoscaler
+node-autoscale
 ===============
 
 scale across processes
@@ -30,7 +30,7 @@ __tl;dr__: send messages `memory` or `uptime` from `process.send(...)` in the ch
 
 The child process can `process.send(...)` messages to the autoscaler to help it do it's job!
 
-currently you can send the following to the autscaler:
+currently you can send the following to the autoscaler:
 
   + `full:bool` - identifies whether the child is full (and can/cannot handle more requests)
   + `memory:number` - identifies memory usage of child. number is from `process.memoryUsage().heapTotal`
