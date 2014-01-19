@@ -19,7 +19,16 @@
     "auto",
     "process"
   ],
-  "author": "Ben Greenier",
+  "homepage": "https://github.com/b3ngr33ni3r/uniform",
+  "author": {
+    "name": "Ben Greenier",
+    "email": "ben+npm@bengreenier.com",
+    "homepage": "bengreenier.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/b3ngr33ni3r/uniformer.git"
+  },
   "license": "MIT",
   "preferGlobal": true
 }
